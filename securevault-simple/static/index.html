@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SecureVault</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #f2f4f8; margin: 0; color: #222; }
+  header { background: #14213d; color: #fff; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; }
+  header button { margin-left: 8px; }
+  main { max-width: 950px; margin: 20px auto; padding: 0 12px; }
+  .card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.1); }
+  input, select, button { padding: 8px; margin: 3px 0; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+  button { background: #2f5bea; color: #fff; border: 0; cursor: pointer; }
+  button.gray { background: #8a93a6; } button.red { background: #d9363e; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px; border-bottom: 1px solid #e5e8ef; }
+  .tag { background: #e7ecff; border-radius: 10px; padding: 1px 8px; margin-right: 4px; font-size: 12px; }
+  .msg { color: #b00020; } .ok { color: #137333; }
+  #auth { max-width: 360px; margin: 60px auto; }
+  #auth input { width: 100%; box-sizing: border-box; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<!-- ============ LOGIN / REGISTER ============ -->
+<div id="auth" class="card">
+  <h2>🔐 SecureVault</h2>
+  <p>Personal Document Management System</p>
+  <input id="a_name" placeholder="Name (only for register)">
+  <input id="a_email" placeholder="Email">
+  <input id="a_pass" type="password" placeholder="Password (min 6 characters)">
+  <button onclick="auth('login')">Login</button>
+  <button class="gray" onclick="auth('register')">Register</button>
+  <p id="a_msg" class="msg"></p>
+  <small>The first account that registers becomes the admin.</small>
+</div>
+
+<!-- ============ MAIN APP ============ -->
+<div id="app" class="hidden">
+  <header>
+    <b>🔐 SecureVault</b>
+    <span>
+      <span id="who"></span>
+      <button class="gray" onclick="show('docs')">Documents</button>
+      <button class="gray" onclick="loadActivity()">Activity</button>
+      <button id="adminBtn" class="gray hidden" onclick="loadAdmin()">Admin</button>
+      <button class="red" onclick="logout()">Logout</button>
+    </span>
+  </header>
+  <main>
+    <p id="msg"></p>
+
+    <!-- documents page -->
+    <div id="docs">
+      <div class="card">
+        <h3>Upload a document</h3>
+        <input id="u_title" placeholder="Title">
+        <input id="u_cat" placeholder="Category (e.g. Legal)">
+        <input id="u_tags" placeholder="Tags (comma separated)">
+        <input id="u_file" type="file">
+        <button onclick="upload()">Upload</button>
+      </div>
+
+      <div class="card">
+        <h3>My documents</h3>
+        <input id="f_q" placeholder="Search..." oninput="loadDocs()">
+        <input id="f_cat" placeholder="Category" oninput="loadDocs()">
+        <input id="f_tag" placeholder="Tag" oninput="loadDocs()">
+        <table>
+          <thead><tr><th>Title</th><th>Category</th><th>Tags</th><th>Ver.</th><th>Owner</th><th>My role</th><th></th></tr></thead>
+          <tbody id="docList"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- one document -->
+    <div id="detail" class="hidden"></div>
+
+    <!-- activity / admin -->
+    <div id="activity" class="card hidden"></div>
+    <div id="admin" class="hidden"></div>
+  </main>
+</div>
+
+<script>
+let token = localStorage.getItem("token");
+let me = JSON.parse(localStorage.getItem("me") || "null");
+let docs = [];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const kb = (n) => (n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB");
+const when = (s) => (s ? new Date(s.replace(" ", "T") + "Z").toLocaleString() : "");
+
+function note(text, good) { $("msg").className = good ? "ok" : "msg"; $("msg").textContent = text || ""; }
+
+// ---- talk to the backend
+async function api(path, opts = {}) {
+  opts.headers = { ...(opts.headers || {}), Authorization: "Bearer " + token };
+  if (opts.json) {
+    opts.body = JSON.stringify(opts.json);
+    opts.headers["Content-Type"] = "application/json";
+    opts.method = opts.method || "POST";
+  }
+  const res = await fetch("/api" + path, opts);
+  if (!res.ok) {
+    let m = res.statusText;
+    try { m = (await res.json()).detail; } catch (e) {}
+    throw new Error(typeof m === "string" ? m : JSON.stringify(m));
+  }
+  return opts.blob ? res.blob() : res.json();
+}
+
+async function download(path, name) {
+  try {
+    const blob = await api(path, { blob: true });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+  } catch (e) { note(e.message); }
+}
+
+// ---- login / register / logout
+async function auth(kind) {
+  try {
+    const body = { email: $("a_email").value, password: $("a_pass").value, name: $("a_name").value };
+    const res = await fetch("/api/" + kind, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Please fill all fields correctly");
+    token = data.token; me = data.user;
+    localStorage.setItem("token", token);
+    localStorage.setItem("me", JSON.stringify(me));
+    start();
+  } catch (e) { $("a_msg").textContent = e.message; }
+}
+function logout() { localStorage.clear(); location.reload(); }
+
+function start() {
+  $("auth").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  $("who").textContent = me.name + " (" + me.role + ")";
+  if (me.role === "admin") $("adminBtn").classList.remove("hidden");
+  show("docs");
+  loadDocs();
+}
+
+function show(page) {
+  for (const p of ["docs", "detail", "activity", "admin"]) $(p).classList.toggle("hidden", p !== page);
+  note("");
+}
+
+// ---- documents
+async function loadDocs() {
+  try {
+    const p = new URLSearchParams({ q: $("f_q").value, category: $("f_cat").value, tag: $("f_tag").value });
+    docs = await api("/documents?" + p);
+    $("docList").innerHTML = docs.map((d) => `<tr>
+      <td>${esc(d.title)}</td><td>${esc(d.category)}</td>
+      <td>${d.tags.map((t) => `<span class="tag">${esc(t)}</span>`).join("")}</td>
+      <td>v${d.version}</td><td>${esc(d.owner_name)}</td><td>${esc(d.my_role)}</td>
+      <td><button onclick="openDoc(${d.id})">Open</button></td></tr>`).join("") || "<tr><td colspan=7>No documents found</td></tr>";
+  } catch (e) { note(e.message); }
+}
+
+async function upload() {
+  const f = $("u_file").files[0];
+  if (!f) return note("Choose a file first");
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("title", $("u_title").value);
+  fd.append("category", $("u_cat").value || "General");
+  fd.append("tags", $("u_tags").value);
+  try {
+    await api("/documents", { method: "POST", body: fd });
+    for (const id of ["u_title", "u_cat", "u_tags", "u_file"]) $(id).value = "";
+    note("Uploaded and encrypted ✔", true);
+    loadDocs();
+  } catch (e) { note(e.message); }
+}
+
+async function openDoc(id) {
+  try {
+    const d = docs.find((x) => x.id === id);
+    const versions = await api(`/documents/${id}/versions`);
+    const canEdit = d.my_role === "owner" || d.my_role === "edit";
+    let html = `<div class="card">
+      <button class="gray" onclick="show('docs'); loadDocs()">← Back</button>
+      <h2>${esc(d.title)}</h2>
+      <p>Category: <b>${esc(d.category)}</b> · Owner: ${esc(d.owner_name)} · Your role: <b>${esc(d.my_role)}</b></p>
+      <button onclick="download('/documents/${id}/download', ${esc(JSON.stringify(versions[0].filename))})">⬇ Download latest</button>
+      ${d.my_role === "owner" ? `<button class="red" onclick="removeDoc(${id})">Delete</button>` : ""}
+    </div>
+    <div class="card"><h3>Version history</h3><table>
+      <tr><th>Version</th><th>File</th><th>Size</th><th>By</th><th>Date</th><th></th></tr>
+      ${versions.map((v) => `<tr><td>v${v.number}</td><td>${esc(v.filename)}</td><td>${kb(v.size)}</td>
+        <td>${esc(v.uploaded_by)}</td><td>${when(v.created)}</td>
+        <td><button class="gray" onclick="download('/documents/${id}/download?version=${v.number}', ${esc(JSON.stringify(v.filename))})">Download</button></td></tr>`).join("")}
+    </table></div>`;
+
+    if (canEdit) html += `<div class="card"><h3>Upload a new version</h3>
+      <input id="v_file" type="file"> <button onclick="newVersion(${id})">Upload version</button></div>`;
+
+    if (d.my_role === "owner") {
+      const shares = await api(`/documents/${id}/shares`);
+      html += `<div class="card"><h3>Share with a user</h3>
+        <input id="s_email" placeholder="Their email">
+        <select id="s_level"><option value="view">View + download</option><option value="edit">Edit (new versions)</option></select>
+        <button onclick="shareDoc(${id})">Share</button>
+        <table>${shares.map((s) => `<tr><td>${esc(s.name)} (${esc(s.email)})</td><td>${esc(s.level)}</td>
+          <td><button class="red" onclick="unshare(${id}, ${s.user_id})">Remove</button></td></tr>`).join("")}</table>
+        <h3>Secure share link</h3>
+        <select id="l_hours"><option value="1">1 hour</option><option value="24" selected>24 hours</option><option value="168">7 days</option></select>
+        <button onclick="makeLink(${id})">Create link</button>
+        <p id="l_out"></p></div>`;
+    }
+    $("detail").innerHTML = html;
+    show("detail");
+  } catch (e) { note(e.message); }
+}
+
+async function newVersion(id) {
+  const f = $("v_file").files[0];
+  if (!f) return note("Choose a file first");
+  const fd = new FormData();
+  fd.append("file", f);
+  try { await api(`/documents/${id}/versions`, { method: "POST", body: fd }); await loadDocs(); await openDoc(id); note("New version uploaded ✔", true); }
+  catch (e) { note(e.message); }
+}
+async function shareDoc(id) {
+  try { await api(`/documents/${id}/share`, { json: { email: $("s_email").value, level: $("s_level").value } }); await openDoc(id); note("Shared ✔", true); }
+  catch (e) { note(e.message); }
+}
+async function unshare(id, uid) {
+  try { await api(`/documents/${id}/shares/${uid}`, { method: "DELETE" }); openDoc(id); } catch (e) { note(e.message); }
+}
+async function makeLink(id) {
+  try {
+    const r = await api(`/documents/${id}/link`, { json: { hours: Number($("l_hours").value) } });
+    const url = location.origin + r.url;
+    $("l_out").innerHTML = `Link (valid until ${when(r.expires)}):<br><input style="width:100%" value="${esc(url)}" onclick="this.select()">`;
+  } catch (e) { note(e.message); }
+}
+async function removeDoc(id) {
+  if (!confirm("Delete this document and all its versions?")) return;
+  try { await api(`/documents/${id}`, { method: "DELETE" }); show("docs"); loadDocs(); } catch (e) { note(e.message); }
+}
+
+// ---- activity and admin
+const activityTable = (rows) => `<table><tr><th>When</th><th>Who</th><th>Action</th><th>Document</th><th>Detail</th></tr>
+  ${rows.map((a) => `<tr><td>${when(a.created)}</td><td>${esc(a.who)}</td><td><span class="tag">${esc(a.action)}</span></td>
+  <td>${esc(a.doc_title || "")}</td><td>${esc(a.detail)}</td></tr>`).join("")}</table>`;
+
+async function loadActivity() {
+  try { $("activity").innerHTML = "<h3>Activity history</h3>" + activityTable(await api("/activity")); show("activity"); }
+  catch (e) { note(e.message); }
+}
+
+async function loadAdmin() {
+  try {
+    const users = await api("/admin/users");
+    const rows = await api("/admin/activity");
+    $("admin").innerHTML = `<div class="card"><h3>All users</h3><table>
+      <tr><th>Name</th><th>Email</th><th>Role</th><th>Documents</th></tr>
+      ${users.map((u) => `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${u.documents}</td></tr>`).join("")}
+      </table></div><div class="card"><h3>System activity log</h3>${activityTable(rows)}</div>`;
+    show("admin");
+  } catch (e) { note(e.message); }
+}
+
+if (token && me) start();
+</script>
+</body>
+</html>
