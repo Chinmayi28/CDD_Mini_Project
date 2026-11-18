@@ -1,0 +1,35 @@
+{
+  "id": "cliff_demo",
+  "utility": "Demo utility with whole-consumption (non-telescopic) slabs",
+  "category": "Domestic",
+  "version": "demo-1",
+  "slab_mode": "cliff",
+  "slabs": [
+    {
+      "upto": 50,
+      "rate": 3.0
+    },
+    {
+      "upto": 150,
+      "rate": 4.5
+    },
+    {
+      "upto": 300,
+      "rate": 6.0
+    },
+    {
+      "upto": null,
+      "rate": 8.0
+    }
+  ],
+  "fixed_charges": {
+    "per_kw": 40.0,
+    "min_kw": 1.0
+  },
+  "fuel_adjustment_per_unit": 0.0,
+  "electricity_duty_percent": 5.0,
+  "subsidy": {
+    "enabled": false
+  },
+  "notes": "Shows the slab-cliff warning: crossing a boundary re-prices ALL units."
+}

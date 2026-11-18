@@ -1,0 +1,23 @@
+{
+  "id": "karnataka_sample_v1",
+  "utility": "Karnataka ESCOM (SAMPLE VALUES - verify against the official KERC tariff order)",
+  "category": "LT-2a Domestic",
+  "version": "2025-04-sample",
+  "slab_mode": "telescopic",
+  "slabs": [
+    {"upto": 100, "rate": 4.15},
+    {"upto": 200, "rate": 5.60},
+    {"upto": null, "rate": 7.15}
+  ],
+  "fixed_charges": {"per_kw": 60.0, "min_kw": 1.0},
+  "fuel_adjustment_per_unit": 0.36,
+  "electricity_duty_percent": 9.0,
+  "subsidy": {
+    "enabled": true,
+    "scheme": "Free-unit scheme (Gruha Jyothi style, SAMPLE rules)",
+    "cap_units": 200,
+    "buffer_percent": 10,
+    "default_units_no_history": 53
+  },
+  "notes": "Illustrative numbers for demo/testing. Replace with values from the current tariff order via a reviewed pull request."
+}
