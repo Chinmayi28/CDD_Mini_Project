@@ -1,15 +1,18 @@
 import csv, io
-from datetime import date, timedelta
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from datetime import date, datetime, timedelta
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, delete
 from sqlalchemy.orm import Session
 
 from . import config, schemas as S
 from .db import Base, engine, get_db
-from .models import User, Bill, Appliance, Reading, Alert
+from .models import User, Bill, Appliance, Reading, Alert, PasswordReset
 from .security import (hash_password, verify_password, make_token, current_user, require_role, encrypt, decrypt)
-from .engine import tariff as T, analytics as A, appliances as AP, solar as SO, nilm
+from .engine import tariff as T, analytics as A, appliances as AP, solar as SO, nilm, ocr
+
+import hashlib, secrets
+from .mailer import send_reset_email, email_configured
 
 app = FastAPI(title="Tariff-Aware Electricity Bill Analyzer & Solar Planner", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
@@ -18,6 +21,7 @@ app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_meth
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(engine)
+    print("Email sending: " + ("READY" if email_configured() else "NOT CONFIGURED (check backend/.env)"), flush=True)
 
 
 @app.get("/health")
@@ -83,6 +87,36 @@ def login(body: S.LoginIn, db: Session = Depends(get_db)):
     return {"token": make_token(u), "user": profile(u)}
 
 
+def _hash_token(t: str) -> str:
+    return hashlib.sha256(t.encode()).hexdigest()
+
+
+@app.post("/auth/forgot-password")
+def forgot_password(body: S.ForgotIn, bg: BackgroundTasks, db: Session = Depends(get_db)):
+    u = db.scalar(select(User).where(User.email == body.email.lower()))
+    if u:
+        db.execute(delete(PasswordReset).where(PasswordReset.user_id == u.id))   # cancel older links
+        raw = secrets.token_urlsafe(32)
+        db.add(PasswordReset(user_id=u.id, token_hash=_hash_token(raw),
+                             expires_at=datetime.utcnow() + timedelta(minutes=config.RESET_MINUTES)))
+        db.commit()
+        bg.add_task(send_reset_email, u.email, f"{config.FRONTEND_URL}/?reset={raw}")
+    return {"message": "If that email is registered, a reset link has been sent."}
+
+
+@app.post("/auth/reset-password")
+def reset_password(body: S.ResetIn, db: Session = Depends(get_db)):
+    r = db.scalar(select(PasswordReset).where(PasswordReset.token_hash == _hash_token(body.token)))
+    if not r or r.used or r.expires_at < datetime.utcnow():
+        raise HTTPException(400, "This reset link is invalid or has expired. Please request a new one.")
+    u = db.get(User, r.user_id)
+    if not u:
+        raise HTTPException(400, "This reset link is invalid or has expired. Please request a new one.")
+    u.password_hash = hash_password(body.new_password)
+    r.used = True
+    db.commit()
+    return {"message": "Password updated. You can now sign in."}
+
 def profile(u):
     masked = None
     if u.consumer_no_enc:
@@ -114,7 +148,7 @@ def update_me(body: S.ProfileIn, user: User = Depends(current_user), db: Session
 @app.delete("/auth/me", status_code=204)
 def delete_account(user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Privacy: user can erase all their data."""
-    for m in (Bill, Appliance, Reading, Alert):
+    for m in (Bill, Appliance, Reading, Alert, PasswordReset):
         db.execute(delete(m).where(m.user_id == user.id))
     db.delete(user); db.commit()
 
@@ -210,6 +244,20 @@ async def import_csv(file: UploadFile = File(...), user: User = Depends(current_
     db.commit()
     return {"added": added, "errors": errors}
 
+@app.post("/bills/ocr")
+async def bill_ocr(file: UploadFile = File(...), user: User = Depends(current_user)):
+    if file.content_type not in ("image/png", "image/jpeg"):
+        raise HTTPException(400, "Upload a .png or .jpg image")
+    data = await file.read()
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(413, "Image larger than 8 MB")
+    try:
+        text = ocr.ocr_image(data)
+    except RuntimeError as e:
+        raise HTTPException(503, str(e))
+    except Exception:
+        raise HTTPException(422, "Could not read this image")
+    return ocr.extract_bill_fields(text)
 
 # ---------- readings / slab tracker ----------
 @app.post("/readings", status_code=201)
