@@ -38,10 +38,4 @@ jobs:
           for i in $(seq 1 30); do curl -sf localhost:8000/health && break || sleep 2; done
           curl -sf localhost:8000/tariffs
           docker compose down -v
-  deploy:
-    if: github.ref == 'refs/heads/main'
-    needs: docker
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger deploy (Render/Railway deploy hook stored as a secret)
-        run: curl -fsS -X POST "${{ secrets.DEPLOY_HOOK_URL }}"
+  
