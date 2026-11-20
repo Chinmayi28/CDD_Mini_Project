@@ -80,3 +80,11 @@ class SolarIn(BaseModel):
 class TariffCompareIn(BaseModel):
     old_id: str
     new_id: str
+
+class ForgotIn(BaseModel):
+    email: EmailStr
+
+
+class ResetIn(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+    new_password: str = Field(min_length=8, max_length=128)

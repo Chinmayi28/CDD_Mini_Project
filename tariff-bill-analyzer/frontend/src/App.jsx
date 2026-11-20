@@ -9,36 +9,77 @@ const useLoad = (fn, deps = []) => {
   useEffect(() => { load(); }, [load]);
   return [d, e, load];
 };
+function usePersistent(key, initial) {
+  const [v, setV] = useState(() => {
+    try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : initial; } catch { return initial; }
+  });
+  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* ignore */ } }, [key, v]);
+  return [v, setV];
+}
 
 /* ---------- Auth ---------- */
 function Auth({ onDone }) {
-  const [mode, setMode] = useState("login"); const [f, setF] = useState({ household_size: 3, sanctioned_kw: 1, tariff_id: "karnataka_sample_v1" });
-  const [err, setErr] = useState(""); const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const [mode, setMode] = useState("login");
+  const [f, setF] = useState({ household_size: 3, sanctioned_kw: 1, tariff_id: "karnataka_sample_v1" });
+  const [err, setErr] = useState(""); const [info, setInfo] = useState("");
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const go = (m) => { setMode(m); setErr(""); setInfo(""); };
   const submit = async () => {
     try {
+      if (mode === "forgot") {
+        const r = await api("/auth/forgot-password", { method: "POST", body: { email: f.email } });
+        setInfo(r.message); setErr(""); return;
+      }
       const body = mode === "login" ? { email: f.email, password: f.password }
         : { ...f, household_size: +f.household_size, sanctioned_kw: +f.sanctioned_kw };
       const r = await api(`/auth/${mode === "login" ? "login" : "register"}`, { method: "POST", body });
       setToken(r.token); onDone(r.user);
-    } catch (e) { setErr(e.message); }
+    } catch (e) { setErr(e.message); setInfo(""); }
   };
+  const title = mode === "login" ? "Sign in" : mode === "register" ? "Create account" : "Reset your password";
   return (
-    <div className="card auth"><h2>{mode === "login" ? "Sign in" : "Create account"}</h2>
+    <div className="card auth"><h2>{title}</h2>
       <div style={{ display: "grid", gap: 10 }}>
-        {mode === "register" && <Field label="Name"><input onChange={set("name")} /></Field>}
-        <Field label="Email"><input type="email" onChange={set("email")} /></Field>
-        <Field label="Password (8+ chars)"><input type="password" onChange={set("password")} /></Field>
+        {mode === "forgot" && <p style={{ margin: 0, fontSize: 14 }}>Enter your account email. We will send you a link to choose a new password.</p>}
+        {mode === "register" && <Field label="Name"><input autoComplete="off" onChange={set("name")} /></Field>}
+        <Field label="Email"><input type="email" name="ul-email" autoComplete="off" defaultValue="" onChange={set("email")} /></Field>
+        {mode !== "forgot" && <Field label="Password (8+ chars)"><input type="password" name="ul-password" autoComplete="new-password" defaultValue="" onChange={set("password")} /></Field>}
         {mode === "register" && <>
           <div className="row"><Field label="Household size"><input type="number" value={f.household_size} onChange={set("household_size")} /></Field>
             <Field label="Sanctioned load (kW)"><input type="number" step="0.5" value={f.sanctioned_kw} onChange={set("sanctioned_kw")} /></Field></div>
-          <Field label="Consumer number (stored encrypted, optional)"><input onChange={set("consumer_no")} /></Field></>}
+          <Field label="Consumer number (stored encrypted, optional)"><input autoComplete="off" onChange={set("consumer_no")} /></Field></>}
         {err && <div className="err">{err}</div>}
-        <button className="btn" onClick={submit}>{mode === "login" ? "Sign in" : "Register"}</button>
-        <button className="link" style={{ color: "var(--teal)" }} onClick={() => { setMode(mode === "login" ? "register" : "login"); setErr(""); }}>
-          {mode === "login" ? "New here? Create an account" : "Have an account? Sign in"}</button>
+        {info && <div className="ok">{info}</div>}
+        <button className="btn" onClick={submit}>{mode === "login" ? "Sign in" : mode === "register" ? "Register" : "Send reset link"}</button>
+        {mode === "login" && <button className="link" style={{ color: "var(--teal)" }} onClick={() => go("forgot")}>Forgot password?</button>}
+        <button className="link" style={{ color: "var(--teal)" }} onClick={() => go(mode === "login" ? "register" : "login")}>
+          {mode === "login" ? "New here? Create an account" : mode === "register" ? "Have an account? Sign in" : "Back to sign in"}</button>
       </div></div>);
 }
 
+function ResetPassword({ token }) {
+  const [p1, setP1] = useState(""); const [p2, setP2] = useState("");
+  const [err, setErr] = useState(""); const [done, setDone] = useState(false);
+  const submit = async () => {
+    if (p1.length < 8) return setErr("Password must be at least 8 characters");
+    if (p1 !== p2) return setErr("The two passwords do not match");
+    try { await api("/auth/reset-password", { method: "POST", body: { token, new_password: p1 } }); setDone(true); setErr(""); }
+    catch (e) { setErr(e.message); }
+  };
+  const toLogin = () => { window.location.href = "/"; };
+  return (
+    <div className="card auth"><h2>Choose a new password</h2>
+      {done ? (<div style={{ display: "grid", gap: 10 }}>
+        <div className="ok">Password updated. You can now sign in with it.</div>
+        <button className="btn" onClick={toLogin}>Go to sign in</button></div>) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          <Field label="New password (8+ chars)"><input type="password" autoComplete="new-password" onChange={(e) => setP1(e.target.value)} /></Field>
+          <Field label="Confirm new password"><input type="password" autoComplete="new-password" onChange={(e) => setP2(e.target.value)} /></Field>
+          {err && <div className="err">{err}</div>}
+          <button className="btn" onClick={submit}>Update password</button>
+          <button className="link" style={{ color: "var(--teal)" }} onClick={toLogin}>Back to sign in</button></div>)}
+    </div>);
+}
 /* ---------- Bills ---------- */
 function Breakdown({ b }) {
   const parts = [["Energy", b.energy_charges, "#0f4c4f"], ["Fixed", b.fixed_charges, "#f0a500"], ["Fuel adj.", b.fuel_adjustment, "#6aa6a8"],
@@ -57,16 +98,30 @@ function Breakdown({ b }) {
 
 function Bills() {
   const [bills, err, reload] = useLoad(() => api("/bills"));
-  const [f, setF] = useState({ month: new Date().toISOString().slice(0, 7), units: "", amount_actual: "" });
+  const [f, setF] = usePersistent("ul:billform", { month: new Date().toISOString().slice(0, 7), units: "", amount_actual: "" });
   const [open, setOpen] = useState(null); const [msg, setMsg] = useState("");
   const add = async () => {
-    try { await api("/bills", { method: "POST", body: { month: f.month, units: +f.units, amount_actual: f.amount_actual ? +f.amount_actual : null } }); setMsg(""); reload(); }
+    try { await api("/bills", { method: "POST", body: { month: f.month, units: +f.units, amount_actual: f.amount_actual ? +f.amount_actual : null } }); setMsg(""); setF({ ...f, units: "", amount_actual: "" }); reload(); }
     catch (e) { setMsg(e.message); }
   };
-  const upload = async (e) => {
-    const fd = new FormData(); fd.append("file", e.target.files[0]);
-    const r = await api("/bills/import-csv", { method: "POST", form: fd });
-    setMsg(`Imported ${r.added}. ${r.errors.join(" | ")}`); reload();
+    const upload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const fd = new FormData(); fd.append("file", file);
+    try {
+      if (file.type.startsWith("image/")) {
+        setMsg("Reading the photo...");
+        const r = await api("/bills/ocr", { method: "POST", form: fd });
+        setF({ month: r.month || f.month, units: r.units ?? "", amount_actual: r.amount ?? "" });
+        setMsg(r.units == null
+          ? "Could not find the units on this photo. Please type them in."
+          : "Read from the photo. Check month, units and amount, then click Add.");
+      } else {
+        const r = await api("/bills/import-csv", { method: "POST", form: fd });
+        setMsg(`Imported ${r.added}. ${r.errors.join(" | ")}`); reload();
+      }
+    } catch (err) { setMsg(err.message); }
+    e.target.value = "";
   };
   return (<>
     <div className="card"><h2>Add a bill</h2>
@@ -75,7 +130,8 @@ function Bills() {
         <Field label="Units consumed"><input type="number" value={f.units} onChange={(e) => setF({ ...f, units: e.target.value })} /></Field>
         <Field label="Amount on your bill (Rs, for audit)"><input type="number" value={f.amount_actual} onChange={(e) => setF({ ...f, amount_actual: e.target.value })} /></Field>
         <button className="btn" onClick={add}>Add</button></div>
-      <h3>Or upload CSV (month,units,amount_actual)</h3><input type="file" accept=".csv" onChange={upload} />
+      <h3>Or upload a CSV (month,units,amount_actual) or a photo of your bill (.png, .jpg)</h3>
+      <input type="file" accept=".csv,.png,.jpg,.jpeg,image/png,image/jpeg" onChange={upload} />
       {(msg || err) && <div className="err">{msg || err}</div>}</div>
     <div className="card"><h2>Your bills</h2>
       <table><thead><tr><th>Month</th><th className="r">Units</th><th className="r">Computed</th><th>Audit</th><th /></tr></thead><tbody>
@@ -91,7 +147,7 @@ function Bills() {
 /* ---------- Slab tracker ---------- */
 function Slab() {
   const [d, err, reload] = useLoad(() => api("/slab-tracker"));
-  const [r, setR] = useState({ day: new Date().toISOString().slice(0, 10), units: "" });
+  const [r, setR] = usePersistent("ul:reading", { day: new Date().toISOString().slice(0, 10), units: "" });
   if (!d) return <div className="card">{err || "Loading..."}</div>;
   const nb = d.status_now.next_boundary; const pct = nb ? Math.min(d.units_so_far / nb.at_units * 100, 100) : 100;
   return (<>
@@ -114,7 +170,7 @@ function Slab() {
 function Appliances() {
   const [an, err, reload] = useLoad(() => api("/appliances/analysis"));
   const [presets] = useLoad(() => api("/appliances/presets"));
-  const [f, setF] = useState({ name: "", watts: "", hours_per_day: "", qty: 1, duty: 1 });
+  const [f, setF] = usePersistent("ul:appform", { name: "", watts: "", hours_per_day: "", qty: 1, duty: 1 });
   const add = async (x) => { await api("/appliances", { method: "POST", body: x }); reload(); };
   return (<>
     <div className="card"><h2>Add appliances</h2>
@@ -138,7 +194,7 @@ function Appliances() {
 
 /* ---------- What-if ---------- */
 function WhatIf() {
-  const [apps] = useLoad(() => api("/appliances")); const [delta, setDelta] = useState({}); const [res, setRes] = useState(null); const [err, setErr] = useState("");
+  const [apps] = useLoad(() => api("/appliances")); const [delta, setDelta] = usePersistent("ul:whatif", {}); const [res, setRes] = useState(null); const [err, setErr] = useState("");
   const run = async () => {
     try { setRes(await api("/whatif", { method: "POST", body: { changes: Object.entries(delta).map(([name, d]) => ({ name, delta_hours_per_day: +d })) } })); setErr(""); }
     catch (e) { setErr(e.message); }
@@ -178,8 +234,8 @@ function Forecast() {
 
 /* ---------- Solar ---------- */
 function Solar() {
-  const [f, setF] = useState({ roof_area_m2: 30, sun_hours: 5, cost_per_kw: 55000, mode: "net_metering", export_rate: 3, battery_kwh: 0, loan_pct: 0, state_subsidy: 0 });
-  const [res, setRes] = useState(null); const [err, setErr] = useState("");
+  const [f, setF] = usePersistent("ul:solarform", { roof_area_m2: 30, sun_hours: 5, cost_per_kw: 55000, mode: "net_metering", export_rate: 3, battery_kwh: 0, loan_pct: 0, state_subsidy: 0 });
+  const [res, setRes] = usePersistent("ul:solarres", null); const [err, setErr] = useState("");
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const run = async () => {
     try { const body = Object.fromEntries(Object.entries(f).map(([k, v]) => [k, k === "mode" ? v : +v]));
@@ -235,15 +291,20 @@ function Lab() {
 const TABS = { Bills, "Slab tracker": Slab, Appliances, "What-if": WhatIf, "Forecast & alerts": Forecast, Solar, "Lab": Lab };
 
 export default function App() {
-  const [user, setUser] = useState(null); const [tab, setTab] = useState("Bills"); const [ready, setReady] = useState(!hasToken());
+  const [user, setUser] = useState(null); const [tab, setTab] = usePersistent("ul:tab", "Bills"); const [ready, setReady] = useState(!hasToken());
   useEffect(() => { if (hasToken()) api("/auth/me").then(setUser).catch(() => setToken(null)).finally(() => setReady(true)); }, []);
   if (!ready) return null;
-  const Page = TABS[tab];
+    const resetToken = new URLSearchParams(window.location.search).get("reset");
+  if (resetToken) return (<>
+    <header><div><h1>Unit Ledger</h1><small>Tariff-aware bill analyzer and solar planner</small></div></header>
+    <ResetPassword token={resetToken} />
+  </>);
+  const Page = TABS[tab] || Bills;
   return (<>
     <header><div><h1>Unit Ledger</h1><small>Tariff-aware bill analyzer and solar planner</small></div>
-      {user && <div>{user.name} <button className="btn alt" style={{ marginLeft: 8 }} onClick={() => { setToken(null); setUser(null); }}>Sign out</button></div>}</header>
+      {user && <div>{user.name} <button className="btn alt" style={{ marginLeft: 8 }} onClick={() => { Object.keys(localStorage).filter((k) => k.startsWith("ul:")).forEach((k) => localStorage.removeItem(k)); setToken(null); setUser(null); }}>Sign out</button></div>}</header>
     {!user ? <Auth onDone={setUser} /> : <>
-      <nav>{Object.keys(TABS).map((t) => <button key={t} className={t === tab ? "on" : ""} onClick={() => setTab(t)}>{t}</button>)}</nav>
+      <nav>{Object.keys(TABS).map((t) => <button key={t} className={t === tab ? "on" : ""} onClick={() => setTab(t)}>{t}</button>)}</nav> 
       <main><Page key={tab} /></main></>}
   </>);
 }
