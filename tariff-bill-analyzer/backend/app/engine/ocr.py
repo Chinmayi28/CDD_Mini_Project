@@ -12,8 +12,8 @@ def _get_engine():
     if _engine is None:
         try:
             from rapidocr_onnxruntime import RapidOCR
-        except ImportError:
-            raise RuntimeError("OCR package missing. Run: pip install rapidocr-onnxruntime Pillow")
+        except ImportError as e:
+            raise RuntimeError(f"OCR package problem: {e}")
         _engine = RapidOCR()
     return _engine
 
